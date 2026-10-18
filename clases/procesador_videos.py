@@ -53,7 +53,7 @@ class ProcesadorVideo:
                 # Llamar al método correcto del detector
                 resultado = self.detector.detectar(frame)
 
-                cantidad_personas = len(resultado.boxes)
+                #cantidad_personas = len(resultado.boxes)
 
                 self.contador.registrar(
                     numero_frame,
