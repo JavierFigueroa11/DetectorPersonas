@@ -12,30 +12,40 @@ class SegmentadorSAM2:
     def __init__(
         self,
         checkpoint="/content/sam2/checkpoints/sam2.1_hiera_small.pt",
-        config="/content/sam2/configs/sam2.1/sam2.1_hiera_s.yaml"
+        config_dir="/content/sam2/sam2/configs",
+        config="sam2.1/sam2.1_hiera_s.yaml"
     ):
-        """
-        Inicializa el modelo SAM 2 para segmentación y seguimiento de video.
-        """
         if not os.path.isfile(checkpoint):
             raise FileNotFoundError(
-                f"No se encontró el checkpoint de SAM 2: {checkpoint}"
+                f"No se encontró el checkpoint: {checkpoint}"
             )
 
-        if not os.path.isfile(config):
+        if not os.path.isfile(os.path.join(config_dir, config)):
             raise FileNotFoundError(
-                f"No se encontró la configuración de SAM 2: {config}"
+                f"No se encontró la configuración: "
+                f"{os.path.join(config_dir, config)}"
             )
 
         self.dispositivo = (
             "cuda" if torch.cuda.is_available() else "cpu"
         )
 
-        self.predictor = build_sam2_video_predictor(
-            config,
-            checkpoint,
-            device=self.dispositivo
-        )
+        # Hydra necesita una ruta de configuración relativa
+        # a la raíz de configuración del paquete SAM 2.
+        import hydra
+        from hydra.core.global_hydra import GlobalHydra
+
+        GlobalHydra.instance().clear()
+
+        with hydra.initialize_config_dir(
+            config_dir=os.path.abspath(config_dir),
+            version_base=None
+        ):
+            self.predictor = build_sam2_video_predictor(
+                config,
+                checkpoint,
+                device=self.dispositivo
+            )
 
     def segmentar_video(
         self,
@@ -45,42 +55,23 @@ class SegmentadorSAM2:
         fps_salida=12.5,
         obj_id=1
     ):
-        """
-        Segmenta y sigue una persona a partir de una caja inicial.
-
-        Parametros:
-            carpeta_frames: carpeta con fotogramas JPG ordenados.
-            ruta_salida: ruta del video de salida.
-            caja: coordenadas [x1, y1, x2, y2] de la persona.
-            fps_salida: fotogramas por segundo del video generado.
-            obj_id: identificador del objeto seguido.
-
-        Retorna:
-            Cantidad de fotogramas procesados.
-        """
-
         if not os.path.isdir(carpeta_frames):
             raise FileNotFoundError(
                 f"No existe la carpeta de fotogramas: {carpeta_frames}"
             )
 
         archivos = sorted(
-            archivo
-            for archivo in os.listdir(carpeta_frames)
+            archivo for archivo in os.listdir(carpeta_frames)
             if archivo.lower().endswith((".jpg", ".jpeg"))
         )
 
         if not archivos:
-            raise ValueError(
-                "No se encontraron fotogramas JPG en la carpeta."
-            )
+            raise ValueError("No se encontraron fotogramas JPG.")
 
         caja = np.asarray(caja, dtype=np.float32)
 
         if caja.shape != (4,):
-            raise ValueError(
-                "La caja debe contener [x1, y1, x2, y2]."
-            )
+            raise ValueError("La caja debe tener [x1, y1, x2, y2].")
 
         primer_frame = cv2.imread(
             os.path.join(carpeta_frames, archivos[0])
@@ -109,3 +100,76 @@ class SegmentadorSAM2:
             )
 
         inference_state = None
+        cantidad_procesada = 0
+
+        try:
+            inference_state = self.predictor.init_state(
+                video_path=carpeta_frames
+            )
+
+            self.predictor.add_new_points_or_box(
+                inference_state=inference_state,
+                frame_idx=0,
+                obj_id=obj_id,
+                box=caja
+            )
+
+            with torch.inference_mode():
+                for frame_idx, object_ids, masks in (
+                    self.predictor.propagate_in_video(inference_state)
+                ):
+                    ruta_frame = os.path.join(
+                        carpeta_frames, f"{frame_idx:05d}.jpg"
+                    )
+                    frame = cv2.imread(ruta_frame)
+
+                    if frame is None:
+                        continue
+
+                    ids = (
+                        object_ids.tolist()
+                        if hasattr(object_ids, "tolist")
+                        else list(object_ids)
+                    )
+
+                    if obj_id in ids:
+                        posicion = ids.index(obj_id)
+                        mascara = masks[posicion]
+
+                        if mascara.ndim == 3:
+                            mascara = mascara[0]
+
+                        mascara = (
+                            mascara.detach().float().cpu().numpy() > 0
+                        )
+
+                        frame[mascara] = (
+                            0.5 * frame[mascara].astype(np.float32)
+                            + 0.5 * np.array(
+                                [0, 255, 0], dtype=np.float32
+                            )
+                        ).astype(np.uint8)
+
+                        cv2.putText(
+                            frame,
+                            f"SAM 2 - Objeto {obj_id}",
+                            (20, 45),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            1,
+                            (0, 255, 0),
+                            2
+                        )
+
+                    escritor.write(frame)
+                    cantidad_procesada += 1
+
+        finally:
+            escritor.release()
+
+            if inference_state is not None:
+                self.predictor.reset_state(inference_state)
+
+        print(f"Fotogramas procesados: {cantidad_procesada}")
+        print(f"Video generado: {ruta_salida}")
+
+        return cantidad_procesada
