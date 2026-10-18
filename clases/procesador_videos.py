@@ -20,7 +20,7 @@ class ProcesadorVideo:
         salida = None
 
         try:
-            fps = video.get(cv2.CAP_PROP_FPS)
+            fps = video.get(cv2.CAP_PROP_FPS) or 25.0
 
             if fps <= 0:
                 fps = 25.0
@@ -49,19 +49,30 @@ class ProcesadorVideo:
                     break
 
                 numero_frame += 1
-
-                # Llamar al método correcto del detector
                 resultado = self.detector.detectar(frame)
 
-                #cantidad_personas = len(resultado.boxes)
+                if hasattr(resultado, "boxes"):
+                    # Resultado de YOLO.
+                    cantidad_personas = len(resultado.boxes)
+                    frame_anotado = resultado.plot()
+
+                elif isinstance(resultado, dict):
+                    # Resultado de Grounding DINO.
+                    cantidad_personas = len(resultado["boxes"])
+                    frame_anotado = self.detector.anotar(
+                        frame, resultado
+                    )
+
+                else:
+                    raise TypeError(
+                        f"Resultado no compatible: {type(resultado)}"
+                    )
 
                 self.contador.registrar(
                     numero_frame,
                     fps,
                     cantidad_personas
                 )
-
-                frame_anotado = resultado.plot()
 
                 cv2.putText(
                     frame_anotado,
