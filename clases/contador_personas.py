@@ -8,7 +8,10 @@ class ContadorPersonas:
         self.registros = []
 
     def registrar(self, numero_frame, fps, cantidad_personas):
-        tiempo = round(numero_frame / fps, 2)
+        #tiempo = round(numero_frame / fps, 2) -> Se cambia ya que el contador comienza en el fotograma 1.
+        #Osea un tiempo distinto de cero.
+        tiempo = round((numero_frame - 1) / fps, 2)
+
 
         self.registros.append({
             "numero_frame": numero_frame,
